@@ -1,0 +1,163 @@
+---
+title: "Análisis de un Diseño Experimental en Franjas (Strip-Plot)"
+subtitle: "Efecto del Nitrógeno y Riego en el Rendimiento del Maíz"
+author: "Análisis original por Dr. Byron González (http://byrong.cc)"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Introducción
+
+Este documento detalla el análisis de un experimento agrícola con un diseño en franjas (o *strip-plot*). El objetivo es evaluar el efecto de diferentes dosis de **Nitrógeno** (factor en franjas verticales) y niveles de **Riego** (factor en franjas horizontales) sobre el **Rendimiento** de un cultivo de maíz (`Rend`). El diseño también considera un efecto de **Bloque** para controlar la variabilidad espacial.
+
+# 1. Carga de Bibliotecas
+
+Primero, cargamos todas las bibliotecas necesarias para el análisis. El siguiente código verifica si cada paquete está instalado; de no ser así, lo instalará antes de cargarlo.
+
+```{r Cargar Bibliotecas}
+# Lista de paquetes requeridos
+packages <- c("readxl", "data.table", "agricolae", "emmeans", 
+              "ggplot2", "tidyverse", "AgroR")
+
+# Función para instalar y cargar paquetes
+install_and_load <- function(pkg){
+  if(!require(pkg, character.only = TRUE)){
+    install.packages(pkg, dependencies = TRUE)
+    library(pkg, character.only = TRUE)
+  }
+}
+
+# Aplicar la función a todos los paquetes
+sapply(packages, install_and_load)
+
+# Nota: El script original instalaba 'emmeans' si 'lsmeans' no estaba. 
+# 'lsmeans' está obsoleto y ha sido reemplazado por 'emmeans'.
+```
+
+# 2. Importación de datos
+
+Los datos se importan directamente desde una URL. Se emplea `data.table::fread` por su eficiencia y su capacidad para manejar delimitadores y decimales específicos.
+
+```{r Cargar Datos}
+franjas <- fread("https://archive.org/download/byrong_Maiz/Maiz.txt", header = TRUE, sep = "\t", dec = ",")
+
+# Se muestran las primeras filas para verificar la carga correcta
+head(franjas)
+```
+
+# 3. Preparación de los datos
+
+Para que el modelo de análisis de varianza (ANDEVA) interprete correctamente las variables categóricas, se convierten las columnas `Nitrog`, `Riego` y `Bloque` a factores. La variable de respuesta `Rend` ya es numérica.
+
+```{r Preparar Datos}
+# Convertir variables a factores
+nitr<- factor(franjas$Nitrog)
+riego<- factor(franjas$Riego)
+bloque<-factor(franjas$Bloque)
+
+# Variable de respuesta numérica
+resp<-as.vector(franjas$Rend)
+resp1<-as.numeric(resp)
+
+# Se verifica la estructura de los datos
+str(franjas)
+```
+
+# 4. Análisis exploratorio: Gráfico de interacción
+
+Un gráfico de interacción es fundamental para visualizar cómo el efecto de un factor (Nitrógeno) puede cambiar según el nivel de otro factor (Riego). Si las líneas no son paralelas, sugiere una posible interacción entre los factores.
+
+```{r Gráfico de Interacción}
+franjas %>% 
+  ggplot() +
+  aes(x = nitr, color = riego, group = riego, y = resp1) +
+  stat_summary(fun = mean, geom = "point") +
+  stat_summary(fun = mean, geom = "line") +
+  xlab("Dosis de Nitrógeno") + ylab("Rendimiento de maíz")+
+  labs(colour = "Niveles de Riego")+
+  theme_minimal()
+```
+
+El gráfico muestra que las líneas no son paralelas. Esto indica una probable interacción entre el Nitrógeno y el Riego. El rendimiento parece aumentar con la dosis de nitrógeno, pero la magnitud de este aumento depende del nivel de riego aplicado.
+
+# 5. Análisis de Varianza (ANDEVA)
+
+## 5.1. Mediante el paquete `agricolae`
+
+El paquete `agricolae` tiene la función `strip.plot()` diseñada específicamente para este tipo de arreglo experimental. Esta función descompone correctamente las fuentes de variación y calcula los errores apropiados para cada factor y su interacción.
+
+*   **Error (a)**: Se usa para probar el efecto del factor en las parcelas horizontales (`nitr`).
+*   **Error (b)**: Se usa para probar el efecto del factor en las parcelas verticales (`riego`).
+*   **Error (c)**: Se usa para probar la interacción (`nitr:riego`).
+
+```{r ANDEVA con agricolae}
+fran.anova<-strip.plot(bloque, nitr, riego, resp1)
+
+# El objeto fran.anova contiene la tabla de ANDEVA
+print(fran.anova$anova.table)
+```
+
+## 5.2. Verificación de supuestos del modelo
+
+Para que los resultados del ANDEVA sean válidos, deben cumplirse ciertos supuestos, como la normalidad de los residuos y la homogeneidad de varianzas. Se construye un modelo lineal (`lm`) equivalente para extraer los residuos y realizar las pruebas diagnósticas.
+
+```{r Supuestos del Modelo}
+# Modelo lineal completo para un arreglo en franjas
+# Incluye los errores anidados correspondientes a cada factor
+mod1 <- lm(resp1 ~ bloque + nitr + bloque:nitr + riego + bloque:riego + nitr:riego, data = franjas)
+
+# 1. Homogeneidad de varianzas (Residuos vs. Predichos)
+plot(mod1, 1)
+
+# 2. Normalidad de los residuos (Q-Q Plot)
+plot(mod1, 2)
+
+# 3. Prueba de normalidad de Shapiro-Wilk
+shapiro.test(residuals(mod1))
+```
+
+*   **Gráfico 1 (Residuals vs Fitted)**: Idealmente, los puntos deben distribuirse aleatoriamente alrededor de la línea horizontal en cero, sin patrones evidentes
+*   **Gráfico 2 (Normal Q-Q)**: Los puntos deben seguir de cerca la línea diagonal. Esto indica que los residuos siguen una distribución normal
+*   **Prueba de Shapiro-Wilk**: Si el p-valor es mayor a 0.05, no hay evidencia suficiente para rechazar la hipótesis nula de que los residuos son normales
+
+# 6. Pruebas de comparación múltiple de medias (Post-Hoc)
+
+Dado que el ANDEVA indica que hay diferencias significativas, pero no entre qué niveles, se emplea una prueba post-hoc de Tukey (HSD - Honest Significant Difference) para comparar las medias de los niveles de cada factor
+
+**Importante**: Cada factor y la interacción deben ser probados con su cuadrado medio del error (`Ea`, `Eb`, `Ec`) y grados de libertad (`gl.a`, `gl.b`, `gl.c`) correspondientes, obtenidos del análisis con `agricolae`.
+
+```{r Pruebas de Comparación}
+# Factor A (Nitrógeno)
+FactorA<-HSD.test(resp1,nitr,fran.anova$gl.a,fran.anova$Ea)
+print(FactorA)
+
+# Factor B (Riego)
+FactorB<-HSD.test(resp1,riego,fran.anova$gl.b,fran.anova$Eb)
+print(FactorB)
+
+# Interacción AB (Nitrógeno:Riego)
+# Se crea una variable de interacción para la prueba
+FactorAB<-HSD.test(resp1,riego:nitr,fran.anova$gl.c,fran.anova$Ec)
+print(FactorAB)
+```
+
+Los resultados muestran grupos de medias. Las medias que comparten una misma letra no son significativamente diferentes entre sí, según la prueba de Tukey (α = 0.05).
+
+# 7. Alternativa de análisis con `AgroR`
+
+El paquete `AgroR` ofrece otra función simplificada, `STRIPLOT`, para realizar el mismo análisis, incluyendo las pruebas de comparación de medias de Tukey y Scott-Knott
+
+```{r ANDEVA con AgroR}
+with(franjas, STRIPLOT(nitr, riego, bloque, resp1,
+                       mcomp = "sk"))
+```
+Esta función genera automáticamente la tabla de ANDEVA, las pruebas de supuestos y las comparaciones de medias, ofreciendo una visión completa del análisis en un solo comando.
